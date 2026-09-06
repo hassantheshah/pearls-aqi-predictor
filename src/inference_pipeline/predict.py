@@ -218,6 +218,7 @@ def _calculate_aqi_features(
 def _build_future_row(
     current_time: pd.Timestamp,
     aqi_history: list,
+    pollutant_history: dict,
     weather: dict,
     last_weather: dict,
 ) -> pd.DataFrame:
@@ -261,9 +262,10 @@ def _build_future_row(
         ),
     )
 
-    aqi_features = _calculate_aqi_features(
-        aqi_history
-    )
+aqi_features = _calculate_aqi_features(
+    aqi_history,
+    pollutant_history,
+)
 
     row = {
         "temperature": float(
