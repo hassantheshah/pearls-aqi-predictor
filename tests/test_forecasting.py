@@ -20,6 +20,7 @@ sys.path.insert(
 
 from config.settings import FEATURE_COLUMNS
 from src.training_pipeline.train import load_data
+from src.feature_pipeline.fetch_data import fetch_openmeteo_historical_data
 from src.inference_pipeline.predict import (
     _calculate_aqi_features,
     _build_future_row,
@@ -166,3 +167,92 @@ def test_recursive_history_changes_after_new_prediction():
         features_before["aqi_rolling_mean_3"]
         != features_after["aqi_rolling_mean_3"]
     )
+
+
+def test_openmeteo_historical_data_is_merged(monkeypatch):
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.payload
+
+    air_payload = {
+        "hourly": {
+            "time": [
+                "2026-08-01T00:00",
+                "2026-08-01T01:00",
+            ],
+            "us_aqi": [80, 85],
+            "pm2_5": [20, 22],
+            "pm10": [35, 38],
+            "nitrogen_dioxide": [10, 11],
+            "ozone": [40, 42],
+            "carbon_monoxide": [0.5, 0.6],
+        }
+    }
+
+    weather_payload = {
+        "hourly": {
+            "time": [
+                "2026-08-01T00:00",
+                "2026-08-01T01:00",
+            ],
+            "temperature_2m": [28.0, 28.5],
+            "relative_humidity_2m": [70, 72],
+            "wind_speed_10m": [3.0, 3.5],
+            "pressure_msl": [1010, 1011],
+        }
+    }
+
+    responses = iter(
+        [
+            FakeResponse(air_payload),
+            FakeResponse(weather_payload),
+        ]
+    )
+
+    def fake_get(*args, **kwargs):
+        return next(responses)
+
+    monkeypatch.setattr(
+        "src.feature_pipeline.fetch_data.requests.get",
+        fake_get,
+    )
+
+    result = fetch_openmeteo_historical_data(
+        "2026-08-01",
+        "2026-08-01",
+    )
+
+    assert len(result) == 2
+    assert result["city"].notna().all()
+
+    assert list(result["aqi"]) == [80, 85]
+    assert list(result["pm25"]) == [20, 22]
+    assert list(result["pm10"]) == [35, 38]
+
+    assert list(result["temperature"]) == [28.0, 28.5]
+    assert list(result["humidity"]) == [70, 72]
+    assert list(result["wind_speed"]) == [3.0, 3.5]
+    assert list(result["pressure"]) == [1010, 1011]
+
+    expected_columns = [
+        "city",
+        "fetched_at",
+        "aqi",
+        "pm25",
+        "pm10",
+        "no2",
+        "o3",
+        "co",
+        "temperature",
+        "humidity",
+        "wind_speed",
+        "pressure",
+    ]
+
+    assert list(result.columns) == expected_columns
