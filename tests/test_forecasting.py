@@ -52,6 +52,30 @@ def make_training_df(n=30):
         "aqi_rolling_mean_3": np.full(n, 50.0),
         "aqi_rolling_mean_6": np.full(n, 50.0),
         "aqi_change_rate": np.zeros(n),
+                "pm25_lag_1": np.full(n, 40.0),
+        "pm25_lag_3": np.full(n, 40.0),
+        "pm25_lag_6": np.full(n, 40.0),
+        "pm25_lag_24": np.full(n, 40.0),
+
+        "pm10_lag_1": np.full(n, 60.0),
+        "pm10_lag_3": np.full(n, 60.0),
+        "pm10_lag_6": np.full(n, 60.0),
+        "pm10_lag_24": np.full(n, 60.0),
+
+        "no2_lag_1": np.full(n, 20.0),
+        "no2_lag_3": np.full(n, 20.0),
+        "no2_lag_6": np.full(n, 20.0),
+        "no2_lag_24": np.full(n, 20.0),
+
+        "o3_lag_1": np.full(n, 30.0),
+        "o3_lag_3": np.full(n, 30.0),
+        "o3_lag_6": np.full(n, 30.0),
+        "o3_lag_24": np.full(n, 30.0),
+
+        "co_lag_1": np.full(n, 1.0),
+        "co_lag_3": np.full(n, 1.0),
+        "co_lag_6": np.full(n, 1.0),
+        "co_lag_24": np.full(n, 1.0),
     }
 
     return pd.DataFrame(data)
