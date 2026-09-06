@@ -127,6 +127,14 @@ def test_future_row_contains_only_deployable_features():
         for value in range(100, 130)
     ]
 
+    pollutant_history = {
+    "pm25": [40.0] * 30,
+    "pm10": [60.0] * 30,
+    "no2": [20.0] * 30,
+    "o3": [30.0] * 30,
+    "co": [1.0] * 30,
+    }
+
     weather = {
         "temperature": 27.0,
         "humidity": 70.0,
@@ -135,10 +143,11 @@ def test_future_row_contains_only_deployable_features():
     }
 
     row = _build_future_row(
-        current_time=current_time,
-        aqi_history=history,
-        weather=weather,
-        last_weather=weather,
+    current_time=current_time,
+    aqi_history=history,
+    pollutant_history=pollutant_history,
+    weather=weather,
+    last_weather=weather,
     )
 
     assert list(row.columns) == FEATURE_COLUMNS
