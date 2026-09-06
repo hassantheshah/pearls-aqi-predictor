@@ -454,6 +454,22 @@ def predict_next_hours(
         .dropna()
         .tolist()
     )
+        # Historical pollutant values used to build lag features.
+    pollutant_history = {}
+
+    for pollutant in ["pm25", "pm10", "no2", "o3", "co"]:
+        if pollutant in history.columns:
+            pollutant_history[pollutant] = (
+                pd.to_numeric(
+                    history[pollutant],
+                    errors="coerce",
+                )
+                .ffill()
+                .fillna(0.0)
+                .tolist()
+            )
+        else:
+            pollutant_history[pollutant] = [0.0]
 
     if not aqi_history:
         logger.error(
@@ -517,6 +533,7 @@ def predict_next_hours(
         feature_row = _build_future_row(
             current_time=future_time,
             aqi_history=aqi_history,
+            pollutant_history=pollutant_history,
             weather=weather,
             last_weather=last_weather,
         )
