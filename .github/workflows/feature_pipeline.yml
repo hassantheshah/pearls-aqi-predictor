@@ -52,3 +52,11 @@ jobs:
           else
             python -m src.feature_pipeline.pipeline
           fi
+      - name: Commit backfilled dataset
+        if: ${{ inputs.mode == 'backfill' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/processed/features.csv
+          git diff --cached --quiet || git commit -m "Update real historical AQI dataset"
+          git push
