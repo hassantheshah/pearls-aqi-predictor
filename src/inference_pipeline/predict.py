@@ -138,40 +138,44 @@ def _calculate_aqi_features(
 ) -> dict:
     """
     Calculate leakage-safe historical AQI and pollutant features.
+
+    Only previously observed AQI and pollutant values are used.
     """
 
     if not aqi_history:
         aqi_history = [80.0]
 
-    # AQI history
-    lag_1 = float(aqi_history[-1])
+    pollutant_history = pollutant_history or {}
 
-    lag_3 = float(
-        aqi_history[-3]
-        if len(aqi_history) >= 3
-        else aqi_history[0]
+    lags = [1, 3, 6, 24]
+
+    features = {}
+
+    # Historical AQI features
+    for lag in lags:
+        if len(aqi_history) >= lag:
+            value = aqi_history[-lag]
+        else:
+            value = aqi_history[0]
+
+        features[f"aqi_lag_{lag}"] = float(value)
+
+    # Rolling AQI features
+    features["aqi_rolling_mean_3"] = float(
+        np.mean(aqi_history[-3:])
     )
 
-    lag_6 = float(
-        aqi_history[-6]
-        if len(aqi_history) >= 6
-        else aqi_history[0]
+    features["aqi_rolling_mean_6"] = float(
+        np.mean(aqi_history[-6:])
     )
 
-    lag_24 = float(
-        aqi_history[-24]
-        if len(aqi_history) >= 24
-        else aqi_history[0]
-    )
-
-    rolling_3 = float(np.mean(aqi_history[-3:]))
-    rolling_6 = float(np.mean(aqi_history[-6:]))
-
+    # AQI change rate
     if len(aqi_history) >= 2:
         previous = float(aqi_history[-2])
+        current = float(aqi_history[-1])
 
         if previous != 0:
-            change_rate = (lag_1 - previous) / previous
+            change_rate = (current - previous) / previous
         else:
             change_rate = 0.0
     else:
@@ -180,33 +184,24 @@ def _calculate_aqi_features(
     if not np.isfinite(change_rate):
         change_rate = 0.0
 
-    features = {
-        "aqi_lag_1": lag_1,
-        "aqi_lag_3": lag_3,
-        "aqi_lag_6": lag_6,
-        "aqi_lag_24": lag_24,
-        "aqi_rolling_mean_3": rolling_3,
-        "aqi_rolling_mean_6": rolling_6,
-        "aqi_change_rate": float(change_rate),
-    }
+    features["aqi_change_rate"] = float(change_rate)
 
-    # Pollutant history
-    pollutant_history = pollutant_history or {}
+    # Historical pollutant features
     pollutant_cols = ["pm25", "pm10", "no2", "o3", "co"]
-    lags = [1, 3, 6, 24]
 
     for pollutant in pollutant_cols:
-        values = pollutant_history.get(pollutant, [])
+        history = pollutant_history.get(pollutant, [])
 
-        if not values:
-            values = [0.0]
+        if not history:
+            history = [0.0]
 
         for lag in lags:
-            features[f"{pollutant}_lag_{lag}"] = float(
-                values[-lag]
-                if len(values) >= lag
-                else values[0]
-            )
+            if len(history) >= lag:
+                value = history[-lag]
+            else:
+                value = history[0]
+
+            features[f"{pollutant}_lag_{lag}"] = float(value)
 
     return features
 
@@ -225,41 +220,36 @@ def _build_future_row(
     """
     Build features for the next forecast hour.
 
+    Uses only:
+    - future weather
+    - calendar features
+    - historical AQI
+    - historical pollutant values
+
     No future AQI or future pollutant measurement is used.
     """
 
     weather = weather or {}
+    last_weather = last_weather or {}
 
     temperature = weather.get(
         "temperature",
-        last_weather.get(
-            "temperature",
-            25.0,
-        ),
+        last_weather.get("temperature", 25.0),
     )
 
     humidity = weather.get(
         "humidity",
-        last_weather.get(
-            "humidity",
-            60.0,
-        ),
+        last_weather.get("humidity", 60.0),
     )
 
     wind_speed = weather.get(
         "wind_speed",
-        last_weather.get(
-            "wind_speed",
-            3.0,
-        ),
+        last_weather.get("wind_speed", 3.0),
     )
 
     pressure = weather.get(
         "pressure",
-        last_weather.get(
-            "pressure",
-            1013.0,
-        ),
+        last_weather.get("pressure", 1013.0),
     )
 
     aqi_features = _calculate_aqi_features(
@@ -268,37 +258,22 @@ def _build_future_row(
     )
 
     row = {
-        "temperature": float(
-            temperature
-        ),
-        "humidity": float(
-            humidity
-        ),
-        "wind_speed": float(
-            wind_speed
-        ),
-        "pressure": float(
-            pressure
-        ),
-        "hour": int(
-            current_time.hour
-        ),
-        "day_of_week": int(
-            current_time.dayofweek
-        ),
-        "month": int(
-            current_time.month
-        ),
-        "is_weekend": int(
-            current_time.dayofweek >= 5
-        ),
-        **aqi_features,
+        "temperature": float(temperature),
+        "humidity": float(humidity),
+        "wind_speed": float(wind_speed),
+        "pressure": float(pressure),
+        "hour": int(current_time.hour),
+        "day_of_week": int(current_time.dayofweek),
+        "month": int(current_time.month),
+        "is_weekend": int(current_time.dayofweek >= 5),
     }
 
-    return pd.DataFrame(
-        [row]
-    )
+    row.update(aqi_features)
 
+    return pd.DataFrame(
+        [[row[column] for column in FEATURE_COLUMNS]],
+        columns=FEATURE_COLUMNS,
+    )
 
 # ─────────────────────────────────────────────────────────────
 # Model prediction
@@ -553,16 +528,32 @@ def predict_next_hours(
                 24
             ).iterrows():
 
-                hist_aqi_features = (
-                    _calculate_aqi_features(
-                        history.loc[
-                            : hist_row.name,
-                            "aqi",
-                        ]
-                        .dropna()
-                        .tolist()
-                    )
-                )
+                hist_pollutant_history = {}
+
+    for pollutant in ["pm25", "pm10", "no2", "o3", "co"]:
+    if pollutant in history.columns:
+        hist_pollutant_history[pollutant] = (
+            pd.to_numeric(
+                history.loc[:hist_row.name, pollutant],
+                errors="coerce",
+            )
+            .dropna()
+            .tolist()
+        )
+    else:
+        hist_pollutant_history[pollutant] = [0.0]
+
+hist_aqi_features = _calculate_aqi_features(
+    aqi_history=(
+        pd.to_numeric(
+            history.loc[:hist_row.name, "aqi"],
+            errors="coerce",
+        )
+        .dropna()
+        .tolist()
+    ),
+    pollutant_history=hist_pollutant_history,
+)
 
                 historical_feature = {
                     "temperature": hist_row.get(
@@ -653,6 +644,25 @@ def predict_next_hours(
         aqi_history.append(
             prediction
         )
+# Future pollutant values are unavailable.
+# Carry the latest observed pollutant values forward
+# for subsequent recursive forecast steps.
+for pollutant in ["pm25", "pm10", "no2", "o3", "co"]:
+    history_values = pollutant_history.get(
+        pollutant,
+        [0.0],
+    )
+
+    latest_value = float(
+        feature_row.iloc[0][f"{pollutant}_lag_1"]
+    )
+
+    history_values.append(latest_value)
+
+    if len(history_values) > 200:
+        history_values = history_values[-200:]
+
+    pollutant_history[pollutant] = history_values
 
         # Prevent unbounded memory growth.
         if len(aqi_history) > 200:
