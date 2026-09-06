@@ -262,10 +262,10 @@ def _build_future_row(
         ),
     )
 
-aqi_features = _calculate_aqi_features(
-    aqi_history,
-    pollutant_history,
-)
+    aqi_features = _calculate_aqi_features(
+        aqi_history,
+        pollutant_history,
+    )
 
     row = {
         "temperature": float(
