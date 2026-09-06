@@ -52,12 +52,11 @@ FEATURE_COLS = list(FEATURE_COLUMNS)
 # Model loading
 # ─────────────────────────────────────────────────────────────
 
+
 def load_best_model():
     """Load the best trained model and required preprocessing."""
 
-    best_model_path = (
-        f"{MODEL_DIR}/best_model.txt"
-    )
+    best_model_path = f"{MODEL_DIR}/best_model.txt"
 
     if not os.path.exists(best_model_path):
         raise FileNotFoundError(
@@ -132,6 +131,7 @@ def load_best_model():
 # AQI history features
 # ─────────────────────────────────────────────────────────────
 
+
 def _calculate_aqi_features(
     aqi_history: list,
     pollutant_history: dict | None = None,
@@ -153,6 +153,7 @@ def _calculate_aqi_features(
 
     # Historical AQI features
     for lag in lags:
+
         if len(aqi_history) >= lag:
             value = aqi_history[-lag]
         else:
@@ -171,37 +172,64 @@ def _calculate_aqi_features(
 
     # AQI change rate
     if len(aqi_history) >= 2:
-        previous = float(aqi_history[-2])
-        current = float(aqi_history[-1])
+
+        previous = float(
+            aqi_history[-2]
+        )
+
+        current = float(
+            aqi_history[-1]
+        )
 
         if previous != 0:
-            change_rate = (current - previous) / previous
+            change_rate = (
+                current - previous
+            ) / previous
+
         else:
             change_rate = 0.0
+
     else:
+
         change_rate = 0.0
 
     if not np.isfinite(change_rate):
         change_rate = 0.0
 
-    features["aqi_change_rate"] = float(change_rate)
+    features["aqi_change_rate"] = float(
+        change_rate
+    )
 
     # Historical pollutant features
-    pollutant_cols = ["pm25", "pm10", "no2", "o3", "co"]
+    pollutant_cols = [
+        "pm25",
+        "pm10",
+        "no2",
+        "o3",
+        "co",
+    ]
 
     for pollutant in pollutant_cols:
-        history = pollutant_history.get(pollutant, [])
+
+        history = pollutant_history.get(
+            pollutant,
+            [],
+        )
 
         if not history:
             history = [0.0]
 
         for lag in lags:
+
             if len(history) >= lag:
                 value = history[-lag]
+
             else:
                 value = history[0]
 
-            features[f"{pollutant}_lag_{lag}"] = float(value)
+            features[
+                f"{pollutant}_lag_{lag}"
+            ] = float(value)
 
     return features
 
@@ -209,6 +237,7 @@ def _calculate_aqi_features(
 # ─────────────────────────────────────────────────────────────
 # Future feature row
 # ─────────────────────────────────────────────────────────────
+
 
 def _build_future_row(
     current_time: pd.Timestamp,
@@ -221,6 +250,7 @@ def _build_future_row(
     Build features for the next forecast hour.
 
     Uses only:
+
     - future weather
     - calendar features
     - historical AQI
@@ -230,54 +260,207 @@ def _build_future_row(
     """
 
     weather = weather or {}
+
     last_weather = last_weather or {}
 
     temperature = weather.get(
         "temperature",
-        last_weather.get("temperature", 25.0),
+        last_weather.get(
+            "temperature",
+            25.0,
+        ),
     )
 
     humidity = weather.get(
         "humidity",
-        last_weather.get("humidity", 60.0),
+        last_weather.get(
+            "humidity",
+            60.0,
+        ),
     )
 
     wind_speed = weather.get(
         "wind_speed",
-        last_weather.get("wind_speed", 3.0),
+        last_weather.get(
+            "wind_speed",
+            3.0,
+        ),
     )
 
     pressure = weather.get(
         "pressure",
-        last_weather.get("pressure", 1013.0),
+        last_weather.get(
+            "pressure",
+            1013.0,
+        ),
     )
 
     aqi_features = _calculate_aqi_features(
-        aqi_history,
-        pollutant_history,
+        aqi_history=aqi_history,
+        pollutant_history=pollutant_history,
     )
 
     row = {
-        "temperature": float(temperature),
-        "humidity": float(humidity),
-        "wind_speed": float(wind_speed),
-        "pressure": float(pressure),
-        "hour": int(current_time.hour),
-        "day_of_week": int(current_time.dayofweek),
-        "month": int(current_time.month),
-        "is_weekend": int(current_time.dayofweek >= 5),
+        "temperature": float(
+            temperature
+        ),
+        "humidity": float(
+            humidity
+        ),
+        "wind_speed": float(
+            wind_speed
+        ),
+        "pressure": float(
+            pressure
+        ),
+        "hour": int(
+            current_time.hour
+        ),
+        "day_of_week": int(
+            current_time.dayofweek
+        ),
+        "month": int(
+            current_time.month
+        ),
+        "is_weekend": int(
+            current_time.dayofweek >= 5
+        ),
     }
 
     row.update(aqi_features)
 
     return pd.DataFrame(
-        [[row[column] for column in FEATURE_COLUMNS]],
+        [
+            [
+                row[column]
+                for column in FEATURE_COLUMNS
+            ]
+        ],
         columns=FEATURE_COLUMNS,
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# Historical feature row for LSTM
+# ─────────────────────────────────────────────────────────────
+
+
+def _build_historical_feature_row(
+    history: pd.DataFrame,
+    row_index,
+) -> dict:
+    """
+    Build one leakage-safe historical feature row.
+
+    All AQI and pollutant features use observations
+    available at or before this historical timestamp.
+    """
+
+    hist_row = history.loc[row_index]
+
+    # AQI history up to this timestamp
+    aqi_history = (
+        pd.to_numeric(
+            history.loc[
+                :row_index,
+                "aqi",
+            ],
+            errors="coerce",
+        )
+        .dropna()
+        .tolist()
+    )
+
+    # Pollutant history up to this timestamp
+    pollutant_history = {}
+
+    for pollutant in [
+        "pm25",
+        "pm10",
+        "no2",
+        "o3",
+        "co",
+    ]:
+
+        if pollutant in history.columns:
+
+            pollutant_history[pollutant] = (
+                pd.to_numeric(
+                    history.loc[
+                        :row_index,
+                        pollutant,
+                    ],
+                    errors="coerce",
+                )
+                .dropna()
+                .tolist()
+            )
+
+        else:
+
+            pollutant_history[pollutant] = [
+                0.0
+            ]
+
+    hist_aqi_features = _calculate_aqi_features(
+        aqi_history=aqi_history,
+        pollutant_history=pollutant_history,
+    )
+
+    timestamp = pd.Timestamp(
+        hist_row["fetched_at"]
+    )
+
+    historical_feature = {
+        "temperature": float(
+            hist_row.get(
+                "temperature",
+                25.0,
+            )
+        ),
+        "humidity": float(
+            hist_row.get(
+                "humidity",
+                60.0,
+            )
+        ),
+        "wind_speed": float(
+            hist_row.get(
+                "wind_speed",
+                3.0,
+            )
+        ),
+        "pressure": float(
+            hist_row.get(
+                "pressure",
+                1013.0,
+            )
+        ),
+        "hour": int(
+            timestamp.hour
+        ),
+        "day_of_week": int(
+            timestamp.dayofweek
+        ),
+        "month": int(
+            timestamp.month
+        ),
+        "is_weekend": int(
+            timestamp.dayofweek >= 5
+        ),
+    }
+
+    historical_feature.update(
+        hist_aqi_features
+    )
+
+    return historical_feature
+
 
 # ─────────────────────────────────────────────────────────────
 # Model prediction
 # ─────────────────────────────────────────────────────────────
+
 
 def _predict_one(
     model,
@@ -322,6 +505,7 @@ def _predict_one(
             )
 
         x_scaler = scaler["x"]
+
         y_scaler = scaler["y"]
 
         sequence_df = pd.DataFrame(
@@ -350,11 +534,13 @@ def _predict_one(
             verbose=0,
         )[0][0]
 
-        prediction = y_scaler.inverse_transform(
-            np.array(
-                [[prediction_scaled]]
-            )
-        )[0][0]
+        prediction = (
+            y_scaler.inverse_transform(
+                np.array(
+                    [[prediction_scaled]]
+                )
+            )[0][0]
+        )
 
     else:
 
@@ -375,6 +561,7 @@ def _predict_one(
 # 72-hour recursive forecast
 # ─────────────────────────────────────────────────────────────
 
+
 def predict_next_hours(
     n_hours: int | None = None,
     weather_forecast: list | None = None,
@@ -384,6 +571,10 @@ def predict_next_hours(
 
     Every prediction is appended to AQI history and becomes
     available to subsequent predictions.
+
+    Future pollutant observations are unavailable, so the
+    latest observed pollutant values are carried forward
+    during recursive forecasting.
     """
 
     if n_hours is None:
@@ -395,8 +586,18 @@ def predict_next_hours(
         model,
         scaler,
         model_name,
-        feature_cols,
+        trained_feature_cols,
     ) = load_best_model()
+
+    # Make sure the saved model contract matches the
+    # current application feature contract.
+    if list(trained_feature_cols) != list(
+        FEATURE_COLUMNS
+    ):
+        raise ValueError(
+            "Model feature columns do not match "
+            "config FEATURE_COLUMNS."
+        )
 
     # Load recent historical context.
     history = read_latest_features(
@@ -404,9 +605,11 @@ def predict_next_hours(
     )
 
     if history.empty:
+
         logger.error(
             "No recent feature data available."
         )
+
         return pd.DataFrame()
 
     history = (
@@ -429,11 +632,21 @@ def predict_next_hours(
         .dropna()
         .tolist()
     )
-        # Historical pollutant values used to build lag features.
+
+    # Historical pollutant values used to
+    # build pollutant lag features.
     pollutant_history = {}
 
-    for pollutant in ["pm25", "pm10", "no2", "o3", "co"]:
+    for pollutant in [
+        "pm25",
+        "pm10",
+        "no2",
+        "o3",
+        "co",
+    ]:
+
         if pollutant in history.columns:
+
             pollutant_history[pollutant] = (
                 pd.to_numeric(
                     history[pollutant],
@@ -443,16 +656,23 @@ def predict_next_hours(
                 .fillna(0.0)
                 .tolist()
             )
+
         else:
-            pollutant_history[pollutant] = [0.0]
+
+            pollutant_history[pollutant] = [
+                0.0
+            ]
 
     if not aqi_history:
+
         logger.error(
             "No historical AQI values available."
         )
+
         return pd.DataFrame()
 
-    # Last known weather values used only as fallback.
+    # Last known weather values used only
+    # as fallback when future weather is unavailable.
     last_row = history.iloc[-1]
 
     last_weather = {
@@ -476,8 +696,35 @@ def predict_next_hours(
 
     predictions = []
 
-    # LSTM needs a rolling sequence of feature rows.
+    # LSTM needs 24 historical feature rows.
     sequence_history = []
+
+    if model_name == "LSTM":
+
+        if len(history) < 24:
+            raise ValueError(
+                "LSTM requires at least "
+                "24 historical rows."
+            )
+
+        for row_index in history.tail(
+            24
+        ).index:
+
+            historical_feature = (
+                _build_historical_feature_row(
+                    history=history,
+                    row_index=row_index,
+                )
+            )
+
+            sequence_history.append(
+                historical_feature
+            )
+
+    # ─────────────────────────────────────────
+    # Recursive forecast loop
+    # ─────────────────────────────────────────
 
     for step in range(
         1,
@@ -491,20 +738,25 @@ def predict_next_hours(
             )
         )
 
+        # Use supplied future weather when available.
         if (
             weather_forecast
             and step <= len(
                 weather_forecast
             )
         ):
+
             weather = (
                 weather_forecast[
                     step - 1
                 ]
             )
+
         else:
+
             weather = {}
 
+        # Build the deployable feature row.
         feature_row = _build_future_row(
             current_time=future_time,
             aqi_history=aqi_history,
@@ -513,92 +765,7 @@ def predict_next_hours(
             last_weather=last_weather,
         )
 
-        # Keep sequence history for possible LSTM use.
-        sequence_history.append(
-            feature_row.iloc[0].to_dict()
-        )
-
-        # For LSTM, we need 24 rows. Seed it with historical
-        # feature rows before the recursive forecast.
-        if model_name == "LSTM" and step == 1:
-
-            historical_sequence = []
-
-            for _, hist_row in history.tail(
-                24
-            ).iterrows():
-
-                hist_pollutant_history = {}
-
-    for pollutant in ["pm25", "pm10", "no2", "o3", "co"]:
-    if pollutant in history.columns:
-        hist_pollutant_history[pollutant] = (
-            pd.to_numeric(
-                history.loc[:hist_row.name, pollutant],
-                errors="coerce",
-            )
-            .dropna()
-            .tolist()
-        )
-    else:
-        hist_pollutant_history[pollutant] = [0.0]
-
-hist_aqi_features = _calculate_aqi_features(
-    aqi_history=(
-        pd.to_numeric(
-            history.loc[:hist_row.name, "aqi"],
-            errors="coerce",
-        )
-        .dropna()
-        .tolist()
-    ),
-    pollutant_history=hist_pollutant_history,
-)
-
-                historical_feature = {
-                    "temperature": hist_row.get(
-                        "temperature",
-                        25.0,
-                    ),
-                    "humidity": hist_row.get(
-                        "humidity",
-                        60.0,
-                    ),
-                    "wind_speed": hist_row.get(
-                        "wind_speed",
-                        3.0,
-                    ),
-                    "pressure": hist_row.get(
-                        "pressure",
-                        1013.0,
-                    ),
-                    "hour": pd.Timestamp(
-                        hist_row["fetched_at"]
-                    ).hour,
-                    "day_of_week": pd.Timestamp(
-                        hist_row["fetched_at"]
-                    ).dayofweek,
-                    "month": pd.Timestamp(
-                        hist_row["fetched_at"]
-                    ).month,
-                    "is_weekend": int(
-                        pd.Timestamp(
-                            hist_row["fetched_at"]
-                        ).dayofweek
-                        >= 5
-                    ),
-                    **hist_aqi_features,
-                }
-
-                historical_sequence.append(
-                    historical_feature
-                )
-
-            sequence_history = (
-                historical_sequence
-                + sequence_history
-            )
-
+        # Predict AQI.
         prediction = _predict_one(
             model=model,
             scaler=scaler,
@@ -644,30 +811,71 @@ hist_aqi_features = _calculate_aqi_features(
         aqi_history.append(
             prediction
         )
-# Future pollutant values are unavailable.
-# Carry the latest observed pollutant values forward
-# for subsequent recursive forecast steps.
-for pollutant in ["pm25", "pm10", "no2", "o3", "co"]:
-    history_values = pollutant_history.get(
-        pollutant,
-        [0.0],
-    )
 
-    latest_value = float(
-        feature_row.iloc[0][f"{pollutant}_lag_1"]
-    )
+        # Future pollutant observations are unavailable.
+        #
+        # Carry the latest observed pollutant values
+        # forward for subsequent recursive steps.
+        for pollutant in [
+            "pm25",
+            "pm10",
+            "no2",
+            "o3",
+            "co",
+        ]:
 
-    history_values.append(latest_value)
+            history_values = (
+                pollutant_history.get(
+                    pollutant,
+                    [0.0],
+                )
+            )
 
-    if len(history_values) > 200:
-        history_values = history_values[-200:]
+            latest_value = float(
+                feature_row.iloc[0][
+                    f"{pollutant}_lag_1"
+                ]
+            )
 
-    pollutant_history[pollutant] = history_values
+            history_values.append(
+                latest_value
+            )
 
-        # Prevent unbounded memory growth.
+            if len(history_values) > 200:
+
+                history_values = (
+                    history_values[-200:]
+                )
+
+            pollutant_history[
+                pollutant
+            ] = history_values
+
+        # Prevent unbounded AQI history growth.
         if len(aqi_history) > 200:
-            aqi_history = aqi_history[-200:]
 
+            aqi_history = (
+                aqi_history[-200:]
+            )
+
+        # For LSTM, the newly constructed
+        # future feature row becomes history
+        # for the next recursive step.
+        if model_name == "LSTM":
+
+            sequence_history.append(
+                feature_row.iloc[
+                    0
+                ].to_dict()
+            )
+
+            if len(sequence_history) > 200:
+
+                sequence_history = (
+                    sequence_history[-200:]
+                )
+
+        # Update weather fallback.
         last_weather = {
             "temperature": feature_row.iloc[
                 0
@@ -698,6 +906,7 @@ for pollutant in ["pm25", "pm10", "no2", "o3", "co"]:
 # ─────────────────────────────────────────────────────────────
 # Daily summaries
 # ─────────────────────────────────────────────────────────────
+
 
 def get_daily_summary(
     predictions_df: pd.DataFrame,
@@ -773,6 +982,7 @@ def get_daily_summary(
 # ─────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────
+
 
 if __name__ == "__main__":
 
