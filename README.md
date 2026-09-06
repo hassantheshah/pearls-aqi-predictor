@@ -1,6 +1,6 @@
 # 🌫️ Pearls AQI Predictor
 
-> **Predict Air Quality Index (AQI) for the next 3 days using a 100% serverless ML pipeline.**
+> **Predict Air Quality Index (AQI) for the next 3 days using an automated cloud-based ML pipeline.**
 
 [![Feature Pipeline](https://github.com/hassantheshah/pearls-aqi-predictor/actions/workflows/feature_pipeline.yml/badge.svg)](https://github.com/hassantheshah/pearls-aqi-predictor/actions)
 [![Training Pipeline](https://github.com/hassantheshah/pearls-aqi-predictor/actions/workflows/training_pipeline.yml/badge.svg)](https://github.com/hassantheshah/pearls-aqi-predictor/actions)
