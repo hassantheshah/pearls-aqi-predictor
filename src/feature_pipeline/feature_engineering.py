@@ -38,11 +38,28 @@ def add_lag_features(
     aqi_col: str = "aqi",
     lags: list = [1, 3, 6, 24],
 ) -> pd.DataFrame:
-    """Add lagged AQI features using only previous observations."""
+    """Add leakage-safe historical AQI and pollutant lag features."""
+
     df = df.copy().sort_values("fetched_at").reset_index(drop=True)
 
+    # Historical AQI features
     for lag in lags:
         df[f"aqi_lag_{lag}"] = df[aqi_col].shift(lag)
+
+    # Historical pollutant features.
+    # These use only past observations, never the current/future value.
+    pollutant_cols = ["pm25", "pm10", "no2", "o3", "co"]
+
+    for pollutant in pollutant_cols:
+        if pollutant not in df.columns:
+            continue
+
+        for lag in lags:
+            df[f"{pollutant}_lag_{lag}"] = df[pollutant].shift(lag)
+
+    logger.debug(
+        f"AQI and pollutant lag features added: lags={lags}"
+    )
 
     return df
 
