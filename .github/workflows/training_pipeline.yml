@@ -39,12 +39,12 @@ jobs:
         with:
           name: trained-models
           path: |
-            models/best_model.pkl
-            models/rf_model.pkl
-            models/ridge_model.pkl
+            models/random_forest.pkl
+            models/ridge.pkl
             models/scaler.pkl
-            models/feature_cols.json
-            models/metrics.json
-            models/lstm_model.pt
+            models/best_model.txt
+            models/feature_cols.pkl
+            models/metrics.csv
+            models/lstm_model.keras
             models/lstm_x_scaler.pkl
             models/lstm_y_scaler.pkl
