@@ -134,91 +134,81 @@ def load_best_model():
 
 def _calculate_aqi_features(
     aqi_history: list,
+    pollutant_history: dict | None = None,
 ) -> dict:
     """
-    Calculate forecasting features from AQI history.
-
-    aqi_history contains AQI values up to the current time.
-
-    The returned features therefore contain ONLY historical
-    information and never the future target.
+    Calculate leakage-safe historical AQI and pollutant features.
     """
 
     if not aqi_history:
         aqi_history = [80.0]
 
-    # Most recent historical AQI.
-    lag_1 = float(
-        aqi_history[-1]
-    )
+    # AQI history
+    lag_1 = float(aqi_history[-1])
 
-    # 3-step lag.
     lag_3 = float(
         aqi_history[-3]
         if len(aqi_history) >= 3
         else aqi_history[0]
     )
 
-    # 6-step lag.
     lag_6 = float(
         aqi_history[-6]
         if len(aqi_history) >= 6
         else aqi_history[0]
     )
 
-    # 24-step lag.
     lag_24 = float(
         aqi_history[-24]
         if len(aqi_history) >= 24
         else aqi_history[0]
     )
 
-    # Rolling means use historical values only.
-    rolling_3 = float(
-        np.mean(
-            aqi_history[-3:]
-        )
-    )
+    rolling_3 = float(np.mean(aqi_history[-3:]))
+    rolling_6 = float(np.mean(aqi_history[-6:]))
 
-    rolling_6 = float(
-        np.mean(
-            aqi_history[-6:]
-        )
-    )
-
-    # Change rate between the two most recent historical AQI values.
     if len(aqi_history) >= 2:
-
-        previous = float(
-            aqi_history[-2]
-        )
+        previous = float(aqi_history[-2])
 
         if previous != 0:
-            change_rate = (
-                lag_1 - previous
-            ) / previous
+            change_rate = (lag_1 - previous) / previous
         else:
             change_rate = 0.0
-
     else:
         change_rate = 0.0
 
-    if not np.isfinite(
-        change_rate
-    ):
+    if not np.isfinite(change_rate):
         change_rate = 0.0
 
-    return {
+    features = {
         "aqi_lag_1": lag_1,
         "aqi_lag_3": lag_3,
         "aqi_lag_6": lag_6,
         "aqi_lag_24": lag_24,
         "aqi_rolling_mean_3": rolling_3,
         "aqi_rolling_mean_6": rolling_6,
-        "aqi_change_rate": float(
-            change_rate
-        ),
+        "aqi_change_rate": float(change_rate),
     }
+
+    # Pollutant history
+    pollutant_history = pollutant_history or {}
+    pollutant_cols = ["pm25", "pm10", "no2", "o3", "co"]
+    lags = [1, 3, 6, 24]
+
+    for pollutant in pollutant_cols:
+        values = pollutant_history.get(pollutant, [])
+
+        if not values:
+            values = [0.0]
+
+        for lag in lags:
+            features[f"{pollutant}_lag_{lag}"] = float(
+                values[-lag]
+                if len(values) >= lag
+                else values[0]
+            )
+
+    return features
 
 
 # ─────────────────────────────────────────────────────────────
