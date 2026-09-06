@@ -18,6 +18,10 @@ on:
         type: string
   schedule:
     - cron: "0 * * * *"
+
+permissions:
+  contents: write
+  
 jobs:
   feature-pipeline:
     runs-on: ubuntu-latest
