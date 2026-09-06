@@ -33,6 +33,7 @@ FEATURE_COLUMNS = [
     "day_of_week",
     "month",
     "is_weekend",
+
     "aqi_lag_1",
     "aqi_lag_3",
     "aqi_lag_6",
@@ -40,6 +41,31 @@ FEATURE_COLUMNS = [
     "aqi_rolling_mean_3",
     "aqi_rolling_mean_6",
     "aqi_change_rate",
+
+    "pm25_lag_1",
+    "pm25_lag_3",
+    "pm25_lag_6",
+    "pm25_lag_24",
+
+    "pm10_lag_1",
+    "pm10_lag_3",
+    "pm10_lag_6",
+    "pm10_lag_24",
+
+    "no2_lag_1",
+    "no2_lag_3",
+    "no2_lag_6",
+    "no2_lag_24",
+
+    "o3_lag_1",
+    "o3_lag_3",
+    "o3_lag_6",
+    "o3_lag_24",
+
+    "co_lag_1",
+    "co_lag_3",
+    "co_lag_6",
+    "co_lag_24",
 ]
 
 TARGET_COLUMN = "aqi"
