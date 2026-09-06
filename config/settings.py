@@ -33,7 +33,6 @@ FEATURE_COLUMNS = [
     "day_of_week",
     "month",
     "is_weekend",
-
     "aqi_lag_1",
     "aqi_lag_3",
     "aqi_lag_6",
