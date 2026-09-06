@@ -2,9 +2,22 @@ name: Feature Pipeline
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Pipeline mode"
+        required: true
+        default: "realtime"
+        type: choice
+        options:
+          - realtime
+          - backfill
+      days:
+        description: "Number of historical days for backfill"
+        required: true
+        default: "90"
+        type: string
   schedule:
     - cron: "0 * * * *"
-
 jobs:
   feature-pipeline:
     runs-on: ubuntu-latest
@@ -30,4 +43,8 @@ jobs:
           HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
           HOPSWORKS_PROJECT: ${{ secrets.HOPSWORKS_PROJECT }}
         run: |
-          python -m src.feature_pipeline.pipeline
+          if [ "${{ inputs.mode }}" = "backfill" ]; then
+            python -m src.feature_pipeline.pipeline --backfill --days "${{ inputs.days }}"
+          else
+            python -m src.feature_pipeline.pipeline
+          fi
