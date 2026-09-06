@@ -24,14 +24,22 @@ HOPSWORKS_PROJECT = os.getenv("HOPSWORKS_PROJECT", "pearls_aqi")
 FORECAST_DAYS = int(os.getenv("FORECAST_DAYS", 3))
 ALERT_THRESHOLD = int(os.getenv("ALERT_AQI_THRESHOLD", 150))
 
-# ── Feature names ─────────────────────────────────────
 FEATURE_COLUMNS = [
-    "aqi", "pm25", "pm10", "no2", "o3", "co",
-    "temperature", "humidity", "wind_speed", "pressure",
-    "hour", "day_of_week", "month", "is_weekend",
-    "aqi_lag_1", "aqi_lag_3", "aqi_lag_6", "aqi_lag_24",
-    "aqi_rolling_mean_3", "aqi_rolling_mean_6",
-    "aqi_change_rate"
+    "temperature",
+    "humidity",
+    "wind_speed",
+    "pressure",
+    "hour",
+    "day_of_week",
+    "month",
+    "is_weekend",
+    "aqi_lag_1",
+    "aqi_lag_3",
+    "aqi_lag_6",
+    "aqi_lag_24",
+    "aqi_rolling_mean_3",
+    "aqi_rolling_mean_6",
+    "aqi_change_rate",
 ]
 
 TARGET_COLUMN = "aqi"
