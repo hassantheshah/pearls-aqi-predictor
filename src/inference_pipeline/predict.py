@@ -1,178 +1,776 @@
 """
 src/inference_pipeline/predict.py
-Loads trained model and generates AQI forecasts for the next 3 days (72 hours).
+
+Generate recursive one-hour-ahead AQI forecasts.
+
+The model is trained as:
+
+    features at time t -> AQI at time t+1
+
+Forecasting is recursive:
+
+    prediction t+1 becomes history
+    prediction t+2 uses that updated history
+    prediction t+3 uses the updated history
+    ...
 """
+
 import os
 import sys
+from datetime import timedelta
+
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
-from datetime import datetime, timedelta
 from loguru import logger
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-from config.settings import FEATURE_COLUMNS, TARGET_COLUMN, FORECAST_DAYS, get_aqi_category
-from src.feature_pipeline.feature_store import read_latest_features
+sys.path.insert(
+    0,
+    os.path.join(
+        os.path.dirname(__file__),
+        "../..",
+    ),
+)
 
-MODEL_DIR    = "models"
-FEATURE_COLS = [c for c in FEATURE_COLUMNS if c != TARGET_COLUMN]
+from config.settings import (
+    FEATURE_COLUMNS,
+    FORECAST_DAYS,
+    get_aqi_category,
+)
 
+from src.feature_pipeline.feature_store import (
+    read_latest_features,
+)
+
+
+MODEL_DIR = "models"
+
+FEATURE_COLS = list(FEATURE_COLUMNS)
+
+
+# ─────────────────────────────────────────────────────────────
+# Model loading
+# ─────────────────────────────────────────────────────────────
 
 def load_best_model():
-    """Load the best registered model from the models directory."""
-    try:
-        best_name = open(f"{MODEL_DIR}/best_model.txt").read().strip()
-        logger.info(f"Loading best model: {best_name}")
+    """Load the best trained model and required preprocessing."""
 
-        if best_name == "RandomForest":
-            model = joblib.load(f"{MODEL_DIR}/random_forest.pkl")
-            scaler = None
-        elif best_name == "Ridge":
-            model  = joblib.load(f"{MODEL_DIR}/ridge.pkl")
-            scaler = joblib.load(f"{MODEL_DIR}/scaler.pkl")
-        elif best_name == "LSTM":
-            import tensorflow as tf
-            model  = tf.keras.models.load_model(f"{MODEL_DIR}/lstm_model.keras")
-            scaler = None
+    best_model_path = (
+        f"{MODEL_DIR}/best_model.txt"
+    )
+
+    if not os.path.exists(best_model_path):
+        raise FileNotFoundError(
+            "best_model.txt not found. "
+            "Run the training pipeline first."
+        )
+
+    with open(
+        best_model_path,
+        "r",
+    ) as file:
+        best_name = file.read().strip()
+
+    logger.info(
+        f"Loading best model: {best_name}"
+    )
+
+    if best_name == "RandomForest":
+
+        model = joblib.load(
+            f"{MODEL_DIR}/random_forest.pkl"
+        )
+
+        scaler = None
+
+    elif best_name == "Ridge":
+
+        model = joblib.load(
+            f"{MODEL_DIR}/ridge.pkl"
+        )
+
+        scaler = joblib.load(
+            f"{MODEL_DIR}/scaler.pkl"
+        )
+
+    elif best_name == "LSTM":
+
+        import tensorflow as tf
+
+        model = tf.keras.models.load_model(
+            f"{MODEL_DIR}/lstm_model.keras"
+        )
+
+        scaler = {
+            "x": joblib.load(
+                f"{MODEL_DIR}/lstm_x_scaler.pkl"
+            ),
+            "y": joblib.load(
+                f"{MODEL_DIR}/lstm_y_scaler.pkl"
+            ),
+        }
+
+    else:
+
+        raise ValueError(
+            f"Unknown model: {best_name}"
+        )
+
+    feature_cols = joblib.load(
+        f"{MODEL_DIR}/feature_cols.pkl"
+    )
+
+    return (
+        model,
+        scaler,
+        best_name,
+        feature_cols,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# AQI history features
+# ─────────────────────────────────────────────────────────────
+
+def _calculate_aqi_features(
+    aqi_history: list,
+) -> dict:
+    """
+    Calculate forecasting features from AQI history.
+
+    aqi_history contains AQI values up to the current time.
+
+    The returned features therefore contain ONLY historical
+    information and never the future target.
+    """
+
+    if not aqi_history:
+        aqi_history = [80.0]
+
+    # Most recent historical AQI.
+    lag_1 = float(
+        aqi_history[-1]
+    )
+
+    # 3-step lag.
+    lag_3 = float(
+        aqi_history[-3]
+        if len(aqi_history) >= 3
+        else aqi_history[0]
+    )
+
+    # 6-step lag.
+    lag_6 = float(
+        aqi_history[-6]
+        if len(aqi_history) >= 6
+        else aqi_history[0]
+    )
+
+    # 24-step lag.
+    lag_24 = float(
+        aqi_history[-24]
+        if len(aqi_history) >= 24
+        else aqi_history[0]
+    )
+
+    # Rolling means use historical values only.
+    rolling_3 = float(
+        np.mean(
+            aqi_history[-3:]
+        )
+    )
+
+    rolling_6 = float(
+        np.mean(
+            aqi_history[-6:]
+        )
+    )
+
+    # Change rate between the two most recent historical AQI values.
+    if len(aqi_history) >= 2:
+
+        previous = float(
+            aqi_history[-2]
+        )
+
+        if previous != 0:
+            change_rate = (
+                lag_1 - previous
+            ) / previous
         else:
-            raise ValueError(f"Unknown model: {best_name}")
+            change_rate = 0.0
 
-        feature_cols = joblib.load(f"{MODEL_DIR}/feature_cols.pkl")
-        return model, scaler, best_name, feature_cols
+    else:
+        change_rate = 0.0
 
-    except FileNotFoundError as e:
-        logger.error(f"Model files not found: {e}. Run training first.")
-        raise
+    if not np.isfinite(
+        change_rate
+    ):
+        change_rate = 0.0
+
+    return {
+        "aqi_lag_1": lag_1,
+        "aqi_lag_3": lag_3,
+        "aqi_lag_6": lag_6,
+        "aqi_lag_24": lag_24,
+        "aqi_rolling_mean_3": rolling_3,
+        "aqi_rolling_mean_6": rolling_6,
+        "aqi_change_rate": float(
+            change_rate
+        ),
+    }
 
 
-def _build_future_row(last_row: pd.Series, step: int,
-                      forecast_weather: dict) -> pd.DataFrame:
+# ─────────────────────────────────────────────────────────────
+# Future feature row
+# ─────────────────────────────────────────────────────────────
+
+def _build_future_row(
+    current_time: pd.Timestamp,
+    aqi_history: list,
+    weather: dict,
+    last_weather: dict,
+) -> pd.DataFrame:
     """
-    Build a synthetic feature row for a future hour.
-    Uses the last known AQI and weather forecast values.
+    Build features for the next forecast hour.
+
+    No future AQI or future pollutant measurement is used.
     """
-    future_time = pd.Timestamp(last_row["fetched_at"]) + timedelta(hours=step)
+
+    weather = weather or {}
+
+    temperature = weather.get(
+        "temperature",
+        last_weather.get(
+            "temperature",
+            25.0,
+        ),
+    )
+
+    humidity = weather.get(
+        "humidity",
+        last_weather.get(
+            "humidity",
+            60.0,
+        ),
+    )
+
+    wind_speed = weather.get(
+        "wind_speed",
+        last_weather.get(
+            "wind_speed",
+            3.0,
+        ),
+    )
+
+    pressure = weather.get(
+        "pressure",
+        last_weather.get(
+            "pressure",
+            1013.0,
+        ),
+    )
+
+    aqi_features = _calculate_aqi_features(
+        aqi_history
+    )
 
     row = {
-        "fetched_at":   future_time,
-        "aqi":          last_row["aqi"],           # will be overwritten by prediction
-        "pm25":         last_row.get("pm25", 0),
-        "pm10":         last_row.get("pm10", 0),
-        "no2":          last_row.get("no2", 0),
-        "o3":           last_row.get("o3", 0),
-        "co":           last_row.get("co", 0),
-        "temperature":  forecast_weather.get("temperature", last_row.get("temperature", 25)),
-        "humidity":     forecast_weather.get("humidity",    last_row.get("humidity", 60)),
-        "wind_speed":   forecast_weather.get("wind_speed",  last_row.get("wind_speed", 3)),
-        "pressure":     forecast_weather.get("pressure",    last_row.get("pressure", 1013)),
-        "hour":         future_time.hour,
-        "day_of_week":  future_time.dayofweek,
-        "month":        future_time.month,
-        "is_weekend":   int(future_time.dayofweek >= 5),
-        "aqi_lag_1":    last_row.get("aqi", 80),
-        "aqi_lag_3":    last_row.get("aqi_lag_1", 80),
-        "aqi_lag_6":    last_row.get("aqi_lag_3", 80),
-        "aqi_lag_24":   last_row.get("aqi_lag_6", 80),
-        "aqi_rolling_mean_3": last_row.get("aqi_rolling_mean_3", 80),
-        "aqi_rolling_mean_6": last_row.get("aqi_rolling_mean_6", 80),
-        "aqi_change_rate":    last_row.get("aqi_change_rate", 0),
+        "temperature": float(
+            temperature
+        ),
+        "humidity": float(
+            humidity
+        ),
+        "wind_speed": float(
+            wind_speed
+        ),
+        "pressure": float(
+            pressure
+        ),
+        "hour": int(
+            current_time.hour
+        ),
+        "day_of_week": int(
+            current_time.dayofweek
+        ),
+        "month": int(
+            current_time.month
+        ),
+        "is_weekend": int(
+            current_time.dayofweek >= 5
+        ),
+        **aqi_features,
     }
-    return pd.DataFrame([row])
+
+    return pd.DataFrame(
+        [row]
+    )
 
 
-def predict_next_hours(n_hours: int = 72,
-                       weather_forecast: list = None) -> pd.DataFrame:
+# ─────────────────────────────────────────────────────────────
+# Model prediction
+# ─────────────────────────────────────────────────────────────
+
+def _predict_one(
+    model,
+    scaler,
+    model_name: str,
+    feature_row: pd.DataFrame,
+    sequence_history: list | None = None,
+) -> float:
+    """Predict the next-hour AQI."""
+
+    X = feature_row[
+        FEATURE_COLS
+    ]
+
+    if model_name == "RandomForest":
+
+        prediction = model.predict(
+            X
+        )[0]
+
+    elif model_name == "Ridge":
+
+        X_scaled = scaler.transform(
+            X
+        )
+
+        prediction = model.predict(
+            X_scaled
+        )[0]
+
+    elif model_name == "LSTM":
+
+        if sequence_history is None:
+            raise ValueError(
+                "LSTM requires sequence history."
+            )
+
+        if len(sequence_history) < 24:
+            raise ValueError(
+                "LSTM requires at least "
+                "24 historical feature rows."
+            )
+
+        x_scaler = scaler["x"]
+        y_scaler = scaler["y"]
+
+        sequence_df = pd.DataFrame(
+            sequence_history[-24:]
+        )
+
+        sequence = sequence_df[
+            FEATURE_COLS
+        ]
+
+        sequence_scaled = x_scaler.transform(
+            sequence
+        )
+
+        sequence_scaled = (
+            sequence_scaled
+            .reshape(
+                1,
+                24,
+                len(FEATURE_COLS),
+            )
+        )
+
+        prediction_scaled = model.predict(
+            sequence_scaled,
+            verbose=0,
+        )[0][0]
+
+        prediction = y_scaler.inverse_transform(
+            np.array(
+                [[prediction_scaled]]
+            )
+        )[0][0]
+
+    else:
+
+        raise ValueError(
+            f"Unsupported model: {model_name}"
+        )
+
+    return float(
+        np.clip(
+            prediction,
+            0,
+            500,
+        )
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# 72-hour recursive forecast
+# ─────────────────────────────────────────────────────────────
+
+def predict_next_hours(
+    n_hours: int | None = None,
+    weather_forecast: list | None = None,
+) -> pd.DataFrame:
     """
-    Generate AQI predictions for the next n_hours.
+    Generate recursive AQI predictions.
 
-    Args:
-        n_hours: Number of hours to forecast (default: 72 = 3 days)
-        weather_forecast: List of weather dicts per hour from OpenWeather
-
-    Returns:
-        DataFrame with columns: timestamp, predicted_aqi, category, color, emoji, confidence
+    Every prediction is appended to AQI history and becomes
+    available to subsequent predictions.
     """
-    model, scaler, model_name, feature_cols = load_best_model()
 
-    # Get recent history for context
-    history = read_latest_features(n_rows=48)
+    if n_hours is None:
+        n_hours = (
+            FORECAST_DAYS * 24
+        )
+
+    (
+        model,
+        scaler,
+        model_name,
+        feature_cols,
+    ) = load_best_model()
+
+    # Load recent historical context.
+    history = read_latest_features(
+        n_rows=48
+    )
+
     if history.empty:
-        logger.error("No recent feature data available.")
+        logger.error(
+            "No recent feature data available."
+        )
         return pd.DataFrame()
 
-    history = history.sort_values("fetched_at").reset_index(drop=True)
+    history = (
+        history
+        .sort_values("fetched_at")
+        .reset_index(drop=True)
+    )
+
+    # Last known timestamp.
+    last_time = pd.Timestamp(
+        history.iloc[-1]["fetched_at"]
+    )
+
+    # Historical AQI values.
+    aqi_history = (
+        pd.to_numeric(
+            history["aqi"],
+            errors="coerce",
+        )
+        .dropna()
+        .tolist()
+    )
+
+    if not aqi_history:
+        logger.error(
+            "No historical AQI values available."
+        )
+        return pd.DataFrame()
+
+    # Last known weather values used only as fallback.
     last_row = history.iloc[-1]
 
+    last_weather = {
+        "temperature": last_row.get(
+            "temperature",
+            25.0,
+        ),
+        "humidity": last_row.get(
+            "humidity",
+            60.0,
+        ),
+        "wind_speed": last_row.get(
+            "wind_speed",
+            3.0,
+        ),
+        "pressure": last_row.get(
+            "pressure",
+            1013.0,
+        ),
+    }
+
     predictions = []
-    current_row = last_row.copy()
 
-    for step in range(1, n_hours + 1):
-        wx = (weather_forecast[step - 1]
-              if weather_forecast and step <= len(weather_forecast)
-              else {})
+    # LSTM needs a rolling sequence of feature rows.
+    sequence_history = []
 
-        X_row = _build_future_row(current_row, step, wx)
-        X_feat = X_row[feature_cols]
+    for step in range(
+        1,
+        n_hours + 1,
+    ):
 
-        if model_name == "Ridge":
-            X_feat_scaled = scaler.transform(X_feat)
-            pred = float(model.predict(X_feat_scaled)[0])
-        elif model_name == "LSTM":
-            # LSTM needs sequence — use last 24 rows + current
-            seq_df = pd.concat([history.tail(23), X_row], ignore_index=True)
-            seq_arr = seq_df[feature_cols].values[-24:]
-            if seq_arr.shape[0] < 24:
-                pred = float(current_row.get("aqi", 80))
-            else:
-                pred = float(model.predict(seq_arr[np.newaxis, ...])[0][0])
+        future_time = (
+            last_time
+            + timedelta(
+                hours=step
+            )
+        )
+
+        if (
+            weather_forecast
+            and step <= len(
+                weather_forecast
+            )
+        ):
+            weather = (
+                weather_forecast[
+                    step - 1
+                ]
+            )
         else:
-            pred = float(model.predict(X_feat)[0])
+            weather = {}
 
-        pred = max(0, min(500, round(pred)))
+        feature_row = _build_future_row(
+            current_time=future_time,
+            aqi_history=aqi_history,
+            weather=weather,
+            last_weather=last_weather,
+        )
 
-        category, color, emoji = get_aqi_category(pred)
-        ts = pd.Timestamp(last_row["fetched_at"]) + timedelta(hours=step)
+        # Keep sequence history for possible LSTM use.
+        sequence_history.append(
+            feature_row.iloc[0].to_dict()
+        )
 
-        predictions.append({
-            "timestamp":     ts,
-            "predicted_aqi": pred,
-            "category":      category,
-            "color":         color,
-            "emoji":         emoji,
-            "day":           ts.strftime("%A, %b %d"),
-            "hour":          ts.strftime("%H:00"),
-        })
+        # For LSTM, we need 24 rows. Seed it with historical
+        # feature rows before the recursive forecast.
+        if model_name == "LSTM" and step == 1:
 
-        # Update current_row with prediction for next step's lag features
-        current_row = X_row.iloc[0].copy()
-        current_row["aqi"]       = pred
-        current_row["aqi_lag_1"] = pred
+            historical_sequence = []
 
-    df = pd.DataFrame(predictions)
-    logger.success(f"Generated {len(df)} hourly AQI predictions.")
-    return df
+            for _, hist_row in history.tail(
+                24
+            ).iterrows():
 
+                hist_aqi_features = (
+                    _calculate_aqi_features(
+                        history.loc[
+                            : hist_row.name,
+                            "aqi",
+                        ]
+                        .dropna()
+                        .tolist()
+                    )
+                )
 
-def get_daily_summary(predictions_df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate hourly predictions into daily summaries."""
-    predictions_df["date"] = pd.to_datetime(predictions_df["timestamp"]).dt.date
-    daily = predictions_df.groupby("date").agg(
-        avg_aqi=("predicted_aqi", "mean"),
-        max_aqi=("predicted_aqi", "max"),
-        min_aqi=("predicted_aqi", "min"),
-    ).reset_index()
-    daily["avg_aqi"] = daily["avg_aqi"].round(1)
-    daily["category"] = daily["avg_aqi"].apply(
-        lambda x: get_aqi_category(x)[0]
+                historical_feature = {
+                    "temperature": hist_row.get(
+                        "temperature",
+                        25.0,
+                    ),
+                    "humidity": hist_row.get(
+                        "humidity",
+                        60.0,
+                    ),
+                    "wind_speed": hist_row.get(
+                        "wind_speed",
+                        3.0,
+                    ),
+                    "pressure": hist_row.get(
+                        "pressure",
+                        1013.0,
+                    ),
+                    "hour": pd.Timestamp(
+                        hist_row["fetched_at"]
+                    ).hour,
+                    "day_of_week": pd.Timestamp(
+                        hist_row["fetched_at"]
+                    ).dayofweek,
+                    "month": pd.Timestamp(
+                        hist_row["fetched_at"]
+                    ).month,
+                    "is_weekend": int(
+                        pd.Timestamp(
+                            hist_row["fetched_at"]
+                        ).dayofweek
+                        >= 5
+                    ),
+                    **hist_aqi_features,
+                }
+
+                historical_sequence.append(
+                    historical_feature
+                )
+
+            sequence_history = (
+                historical_sequence
+                + sequence_history
+            )
+
+        prediction = _predict_one(
+            model=model,
+            scaler=scaler,
+            model_name=model_name,
+            feature_row=feature_row,
+            sequence_history=sequence_history,
+        )
+
+        prediction = int(
+            round(
+                prediction
+            )
+        )
+
+        category, color, emoji = (
+            get_aqi_category(
+                prediction
+            )
+        )
+
+        predictions.append(
+            {
+                "timestamp": future_time,
+                "predicted_aqi": prediction,
+                "category": category,
+                "color": color,
+                "emoji": emoji,
+                "day": future_time.strftime(
+                    "%A, %b %d"
+                ),
+                "hour": future_time.strftime(
+                    "%H:00"
+                ),
+            }
+        )
+
+        # ─────────────────────────────────────
+        # CRITICAL:
+        # The prediction becomes historical
+        # information for the next forecast.
+        # ─────────────────────────────────────
+
+        aqi_history.append(
+            prediction
+        )
+
+        # Prevent unbounded memory growth.
+        if len(aqi_history) > 200:
+            aqi_history = aqi_history[-200:]
+
+        last_weather = {
+            "temperature": feature_row.iloc[
+                0
+            ]["temperature"],
+            "humidity": feature_row.iloc[
+                0
+            ]["humidity"],
+            "wind_speed": feature_row.iloc[
+                0
+            ]["wind_speed"],
+            "pressure": feature_row.iloc[
+                0
+            ]["pressure"],
+        }
+
+    result = pd.DataFrame(
+        predictions
     )
-    daily["color"] = daily["avg_aqi"].apply(lambda x: get_aqi_category(x)[1])
-    daily["emoji"] = daily["avg_aqi"].apply(lambda x: get_aqi_category(x)[2])
+
+    logger.success(
+        f"Generated {len(result)} "
+        f"hourly AQI predictions."
+    )
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
+# Daily summaries
+# ─────────────────────────────────────────────────────────────
+
+def get_daily_summary(
+    predictions_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Aggregate hourly predictions into daily summaries."""
+
+    if predictions_df.empty:
+        return pd.DataFrame()
+
+    df = predictions_df.copy()
+
+    df["date"] = pd.to_datetime(
+        df["timestamp"]
+    ).dt.date
+
+    daily = (
+        df.groupby("date")
+        .agg(
+            avg_aqi=(
+                "predicted_aqi",
+                "mean",
+            ),
+            max_aqi=(
+                "predicted_aqi",
+                "max",
+            ),
+            min_aqi=(
+                "predicted_aqi",
+                "min",
+            ),
+        )
+        .reset_index()
+    )
+
+    daily["avg_aqi"] = (
+        daily["avg_aqi"]
+        .round(1)
+    )
+
+    daily["category"] = (
+        daily["avg_aqi"]
+        .apply(
+            lambda value:
+            get_aqi_category(
+                value
+            )[0]
+        )
+    )
+
+    daily["color"] = (
+        daily["avg_aqi"]
+        .apply(
+            lambda value:
+            get_aqi_category(
+                value
+            )[1]
+        )
+    )
+
+    daily["emoji"] = (
+        daily["avg_aqi"]
+        .apply(
+            lambda value:
+            get_aqi_category(
+                value
+            )[2]
+        )
+    )
+
     return daily
 
 
+# ─────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    preds = predict_next_hours(n_hours=72)
-    if not preds.empty:
-        daily = get_daily_summary(preds)
-        print("\n📅 3-Day AQI Forecast:")
-        print(daily.to_string(index=False))
+
+    predictions = predict_next_hours()
+
+    if not predictions.empty:
+
+        daily = get_daily_summary(
+            predictions
+        )
+
+        print(
+            "\n📅 3-Day AQI Forecast:"
+        )
+
+        print(
+            daily.to_string(
+                index=False
+            )
+        )
